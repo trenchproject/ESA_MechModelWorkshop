@@ -1,0 +1,463 @@
+---
+title: "Introduction to the NicheMapR ectotherm model"
+author: "Michael Kearney"
+date: "`r Sys.Date()`"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Ectotherm Model Tutorial}
+  %\VignetteEncoding{UTF-8}
+  %\VignetteEngine{knitr::rmarkdown}
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r, echo = FALSE}
+knitr::opts_chunk$set(
+ eval = TRUE
+)
+```
+
+## Overview
+
+This vignette is a tutorial for the NicheMapR ectotherm model (Kearney and Porter, 2019). It only considers the steady state heat and (partial) water budget model. For details on the implementation of the Dynamic Energy Budget model (for simulating growth, development and reproduction as well as full water budgets), see the vignette [Introduction to Dynamic Energy Budget models in NicheMapR](deb-model-tutorial.html).
+
+The NicheMapR ectotherm model is run with the function `ectotherm`. It includes a range of morphological, physiological and behavioural options to capture how organisms exchange heat and water with their environments, and to compute the consequences of this for body temperature, activity constraints and different aspects of the mass budget. It is designed to take the output of the NicheMapR microclimate model (Kearney and Porter, 2017) as the driving environmental inputs, but you could construct custom versions of these if desired.
+
+## Basic operation - ectoR_devel
+
+We first consider a pared down version of `ectotherm`, `ectoR_devel`. This just includes the heat budget calculations used in `ectotherm`, and includes no behavioural or physiological thermoregulatory responses. It uses a series of functions to compute aspects of the geometry of the organism as well as to compute the separate processes of heat exchange (solar and longwave radiation, convection, conduction, evaporation, metabolism) and to integrate them to solve for body temperature. 
+
+All are accessible within the R environment. E.g., the `GEOM_ecto` function calculates the surface areas, characteristic dimension for convection and other physical dimensions. Below is an example application to obtain surface areas.
+
+```{r, message=FALSE, warnings=FALSE}
+library(NicheMapR)
+
+GEOM.out <- GEOM_ecto(
+  AMASS = 0.04,
+  GEOMETRY = 3,
+  SHP = c(1, 3, 2/3),
+  ANDENS = 1000
+)
+
+AREA <- GEOM.out$AREA # total area, m^2
+AV <- GEOM.out$AV # ventral area, m^2
+ASILN <- GEOM.out$ASILN # silhouette area normal to sun, m^2
+ASILP <- GEOM.out$ASILP # silhouette area parallel to sun, m^2
+```
+
+The results can then be used with the `SOLAR_ecto` function to compute the solar radiation absorbed if the animal was oriented normal (perpendicular) to the sun's rays:
+
+```{r, message=FALSE, warnings=FALSE}
+ABSAN <- 0.85 # solar absorptivity of organism, -
+ABSSB <- 0.7 # solar absorptivity of substrate, -
+ZEN <- 20 # zenith angle of sun, degrees
+QSOLR <- 800 # horizontal plane total solar radiation, W/m^2
+PDIF <- 0.15 # fraction of solar that is diffuse
+FATOSK <- 0.5 # configuration factor to sky, -
+FATOSB <- 0.5 # configuration factor to substrate, -
+FATOBJ <- 0 # configuration factor to nearby object, -
+SOLAR.out <- SOLAR_ecto(ATOT = AREA,
+                        ASIL = ASILN,
+                        AV = AV,
+                        ABSAN = ABSAN,
+                        ABSSB = ABSSB,
+                        FATOSK = FATOSK,
+                        FATOSB = FATOSB,
+                        FATOBJ = FATOBJ,
+                        ZEN = ZEN,
+                        QSOLR = QSOLR,
+                        PDIF = PDIF)
+SOLAR.out$QSOLAR # solar energy absorbed, Watts
+```
+
+Below is a minimal example application of `ectoR_devel` just specifying the mass, shape, solar absorptivity and posture of the animal - one shaped like a lizard (the desert iguana, *Dipsosaurus dorsalis*). It is exposed to an air temperature of 20 &deg;C but ends up having a body temperature of over 32 &deg;C, especially due to the effects of radiation and conduction.
+
+```{r, message=FALSE, warnings=FALSE}
+ectoR.out <- ectoR_devel(Ww_g = 40, # wet weight, g
+                         shape = 3, # using lizard geometry
+                         alpha = 0.85, # solar absorptivity
+                         postur = 0, # average posture, half way between normal and parallel to sun
+                         TA = 20, # air temperature at lizard height, deg C
+                         TGRD = 40, # ground temperature, deg C
+                         TSKY = -5, # sky temperature, deg C
+                         VEL = 1, # wind speed, m/s
+                         RH = 30, # relative humidity, %
+                         QSOLR = 800, # total horizontal plane solar radiation, W/m2
+                         Z = 20 # solar zenith angle, degrees
+)
+# return body temperature
+ectoR.out$TC
+```
+
+## Basic operation - ectotherm
+
+There are more inputs and outputs for the `ectoR_devel` but we will now work with the `ectotherm` function which has the same inputs and outputs as well as additional ones relating to behavioural thermoregulation. By default it simulates behavioural thermoregulation although this can be turned off by setting the argument 'live=0' (which also turns off heat generated by metabolism).
+
+As with the [Introduction to the NicheMapR microclimate model](microclimate-model-tutorial.html), we now run the model to produce 12 days of output, one for each month of the year (but the model can be run from any outputs from the various microclimate model functions). Try running the model with the default inputs for a location of your choice, e.g.:
+
+```{r, message=FALSE, warnings=FALSE}
+longlat <- c(146.77, -19.29) # Townsville, northern Australia
+micro <- micro_global(loc = longlat)
+ecto <- ectotherm(Ww_g = 40,
+                  shape = 3,
+                  alpha_max = 0.85,
+                  alpha_min = 0.85,
+                  live = 1) # uses default behavioural settings (for the Australian Eastern Water Skink)
+```
+
+The results are returned as a list of tables, here called **ecto**. The main ones to focus on for now are
+
+* **environ** The body temperature, activity and environments experienced by the animal
+* **enbal** The components of the computed heat budget
+* **masbal** The components of the computed mass budget
+
+## Output table environ
+
+The output table **environ** looks like this (some columns of the first 13 hrs are shown):
+
+```{r, echo=FALSE, results='asis', message=FALSE, warnings=FALSE}
+knitr::kable(head(ecto$environ[,c(4:15,25)], 13), digits = 2)
+knitr::kable(head(ecto$environ[,c(26:29)], 13), digits = 2)
+```
+
+and includes the following variables (among others):
+
+* **TIME** - time of day (hours)
+* **TC** - body temperature (&deg;C)
+* **SHADE** - shade selected (\%)
+* **SOLAR**  - solar radiation (W/m2) at animal location
+* **DEP** - depth below ground (cm)
+* **ACT** - activity state (0=inactive, 1=basking, 2=foraging)
+* **TA** - air temperature (&deg;C) at animal location
+* **TSUB** - substrate temperature (&deg;C) at animal location
+* **TSKY** - overhead (sky) temperature (&deg;C) at animal location
+* **VEL** - wind speed (m/s) at animal location
+* **RELHUM** - relative humidity (\%) at animal location
+* **ZEN** - zenith angle of sun (degrees, where 90&deg; = below the horizon)
+* **ABSAN** - solar absorptivity (fractional)
+* **PCOND** - proportion of animal's surface in contact with ground (fractional)
+* **POSTURE** - postural orientation (1=perpendicular to sun, 2=parallel, 0=in-between)
+* **PANT** - panting multiplier (>1 means panting)
+* **PCTWET** - percent of the skin that is wet (0-100%)
+
+The model has considered, for each hour of the day, where the organism could be in its habitat conditional on the behavioural options set. The default simulation is for the Eastern Water Skink, *Eulamprus quoyii*, which is diurnal (`diurn = 1`, `nocturn = 0`, `crepus = 0`). So, for the nighttime and twilight hours, the animal is assumed to be underground (`burrow = 1`). 
+
+The algorithm choosing the depth at which to put the animal starts at the shallowest depth allowed (here node 2 which is 2.5 cm, but it could be node 1 which is the surface) and moves deeper only if it would go below the stated critical thermal minimum `CT_min` (6 &deg;C by default) or if it would be more than half way between the maximum foraging temperature `T_F_max` (34 &deg;C by default) and the critical thermal maximum `CT_max` (40 &deg;C by default). 
+
+Note how the wind speed is set to an arbitrarily low value when then animal is sheltering under ground, and the air, substrate and 'sky' temperatures are equal to the soil temperature at the chosen depth.
+
+When the sun rises (**ZEN** < 90&deg;, at 6 am in in this case) the model tries placing the animal on the surface in the open, as long as the animal's body temperature is above the emergence temperature `T_RB_min` (i.e. retreat to basking transition, which is 17.5 &deg;C by default). If the resulting computed body temperature is above the minimum basking threshold `T_B_min` (also 17.5 &deg;C by default), that becomes the selected environment and the activity state **ACT** is reported as 1. 
+
+If the body temperature is above the minimum foraging temperature `T_F_min`, then activity state is set to 2. If the animal's predicted temperature is above the preferred temperature `T_pref` (30 &deg;C by default), then the animal changes posture to be parallel to the sun's rays and thereby minimise solar heat gain. If this prevents the `T_pref` from being exceeded then the animal is recorded to be in this posture. 
+
+If the postural adjustment fails, then shade seeking is invoked if allowed (`shade_seek = 1`), which is what has happened in this example at 7 am. The shade is set to jump up in 3% intervals (`delta_shade = 3`), and 33% was sufficient in this case. As the day moves on, the animal in this example can remain active near its preferred body temperature but only by moving into deeper shade, to the maximum level of 90% in this case (vector `maxshades` which, by default, comes from the microclimate model settings). 
+
+Once the maximum shade is reached, the animal's preferred temperature is allowed to rise in 0.5 degree increments until the maximum foraging temperature is reached `T_F_max`, upon which the animal is forced to become inactive.
+
+The animal may also change its posture when cold to point normal to the sun (**postur** = 1) and potentially increase the contact with the substrate (**pcond** will increase by 20%) if the ground is warmer than the body. These postural adjustments aren't necessary in this particular simulation, but can be important under cooler climates.
+
+## Output table enbal
+
+The output table **enbal** looks like this:
+
+```{r, echo=FALSE, results='asis', message=FALSE, warnings=FALSE}
+knitr::kable(head(ecto$enbal, 13), digits = 2)
+```
+
+It quantifies the different pathways of exchange in each hour of the simulation:
+
+* **DOY** - day of year
+* **YEAR** - year of simulation
+* **DAY** - day of simulation
+* **TIME** - time of day (hours)
+* **TC** - body temperature (&deg;C)
+* **QSOL** - solar radiation absorbed (W)
+* **QIRIN** - infrared radiation absorbed (W)
+* **QMET** - metabolic heat production (W)
+* **QEVAP** - evaporative heat loss (W)
+* **QIROUT** - infrared radiation lost (W)
+* **QCONV** - heat lost by convection (W)
+* **QCOND** - heat lost by conduction (W)
+* **ENB** - energy balance (&deg;C)
+* **NTRY** - iterations required for solution to heat balance equation
+
+where the complete heat budget is 
+
+$$ENB = QSOL + QIRIN + QMET - QEVAP - QIROUT - QCONV - QCOND$$
+
+**QIRIN**, **QIROUT**, **QSOL** and **QMET** will always be positive, but **QEVAP**, **QCONV** and **QCOND** may be positive or negative. For example in this case, **QCOND** is near zero in the burrow, positive (i.e. causing cooling) in the morning, and becomes negative (causing heating) by 8 am. Note that more iterations of the model, **NTRY**, are required when the animal is out of its burrow, due to the model repeatedly trying different options (e.g. increasing shade, increasing the target temperature, etc.) until it finds a solution.
+
+## Output table masbal
+
+Finally, the table **masbal** includes the following outputs (among others):
+
+```{r, echo=FALSE, results='asis', message=FALSE, warnings=FALSE}
+knitr::kable(head(ecto$masbal[,c(1:5, 15:17)], 12))
+```
+
+* **DOY** - day of year
+* **YEAR** - year of simulation
+* **DAY** - day of simulation
+* **TIME** - time of day (hours)
+* **O2_ml** - oxygen consumption rate (ml/h)
+* **H2OResp_g** - respiratory water loss (g/h)
+* **H2OCut_g** - cutaneous water loss (g/h)
+* **H2OEye_g** - ocular water loss (g/h)
+
+There are a number of other columns in this output but they are of value zero because we are not running the Dynamic Energy Budget model (i.e. `DEB = 0` by default). We are instead obtaining the oxygen consumption rate (ml/h) by an allometric function based on Eq. 2 from Andrews & Pough 1985,
+
+$V_{O_2} = M_1 M^{M_2} 10^{M_3 T_b}$
+
+where $M$ is the mass in grams, $T_b$ is the body temperature, and $M_1$, $M_2$ and $M_3$ are constants which can be user-defined. From this, in conjunction with the oxygen extraction efficiency `F_O2` and the difference in temperature between expired and inspired air `delta_air` (0.1 &deg;C by default), the respiratory water loss **H2OResp_g** can be computed. Note that it is negative in the burrow, i.e. a tiny amount of water is gained from breathing, due to the air being highly saturated. 
+
+From the percentage of the skin that is 'wet' `pct_wet` one can estimate the cutaneous water loss **H2O_cut**. The `pct_wet` parameter represents the \% surface area that would act as free water surface if all the little pores letting water through the skin were collected together in one place.
+
+Finally, the parameter `pct_eyes` is the \% of the total surface area taken up by the eyes when open, and is used to compute ocular water loss when the animal is active (this can be a substantial part of the water loss). 
+
+If you are interested in the other quantities available in the **masbal** output, you will need to develop a DEB model for your species (see the [Dynamic Energy Budget lab](http://www.bio.vu.nl/thb/deb/deblab/), particularly the [Add-my-pet Portal](http://www.bio.vu.nl/thb/deb/deblab/add_my_pet/), for details, as well as the vignette [Introduction to Dynamic Energy Budget models in NicheMapR](deb-model-tutorial.html) which explains the **debout** output table).
+
+## Plotting some output
+
+Now let's take broader look at the simulation outcome, by plotting the results. We will this time be explicit about the parameter values as follows (see the help for the ectotherm model by typing ?ectotherm in the R console to get more details on the options for these and other parameters):
+
+```{r, warning=FALSE, message=FALSE}
+Ww_g <- 40        # wet weight of animal (g)
+pct_wet <- 0.2    # % of surface area acting as a free-water exchanger
+alpha_min <-0.85  # minimum solar absorbtivity (dec %)
+alpha_max <- 0.85 # maximum solar absorbtivity (dec %)
+shape <- 3        # lizard shape
+T_RB_min <- 17.5  # min Tb at which they will attempt to leave retreat
+T_B_min <- 17.5   # min Tb at which leaves retreat to bask
+T_F_min <- 24     # minimum Tb at which activity occurs
+T_F_max <- 34     # maximum Tb at which activity occurs
+T_pref <- 30      # preferred Tb (will try and regulate to this)
+CT_max <- 40      # critical thermal minimum (affects choice of retreat)
+CT_min <- 6       # critical thermal maximum (affects choice of retreat)
+mindepth <- 2     # min depth (node, 1-10) allowed
+maxdepth <- 10    # max depth (node, 1-10) allowed
+shade_seek <- 1   # shade seeking?
+burrow <- 1       # can it burrow?
+climb <- 0        # can it climb to thermoregulate?
+nocturn <- 0      # nocturnal activity
+crepus <- 0       # crepuscular activity
+diurn <- 1        # diurnal activity
+minshades <- rep(0, 12)   # min available shade?
+maxshades <- micro$maxshade # max available shade?
+```
+
+Run the ectotherm model, retrieve the output and create some mock dates.
+
+```{r, warning=FALSE, message=FALSE}
+ecto <- ectotherm(Ww_g = Ww_g, alpha_max = alpha_max, alpha_min = alpha_min, shape = shape, pct_wet = pct_wet, T_F_max = T_F_max, T_F_min = T_F_min, T_B_min = T_B_min, T_RB_min = T_RB_min, CT_max = CT_max, CT_min = CT_min, T_pref = T_pref, mindepth = mindepth, maxdepth = maxdepth, shade_seek = shade_seek, burrow = burrow, climb = climb, minshades = minshades, nocturn = nocturn, diurn = diurn, crepus = crepus, maxshades = maxshades)
+
+# retrieve output
+environ <- as.data.frame(ecto$environ) # behaviour, Tb and environment
+enbal <- as.data.frame(ecto$enbal) # heat balance outputs
+masbal <- as.data.frame(ecto$masbal) # mass balance outputs
+metout <- as.data.frame(micro$metout) # above ground microclimate
+environ <- cbind(environ,metout$SOLR) # add solar radiation for activity window plots
+colnames(environ)[ncol(environ)] <- "Solar"
+
+# append dates
+days <- rep(seq(1,12),24)
+days <- days[order(days)]
+dates <- days+metout$TIME/60/24-1 # dates for hourly output
+dates2 <- seq(1,12,1) # dates for daily output
+metout <- cbind(dates,metout)
+environ <- cbind(dates,environ)
+masbal <- cbind(dates,masbal)
+enbal <- cbind(dates,enbal)
+```
+
+Plot the body temperature, shade, activity and depth selected through time.
+
+```{r, fig.width=7, fig.height=7, fig.show = "hold", message=FALSE, warnings=FALSE, fig.cap="**Body temperature, depth, shade and activity of for the lizard *Eulamprus quoyii* with shade options ranging from 0% to 90%**"}
+with(environ, plot(TC ~ dates, ylab = "", xlab="month of year", col = 'black', xlim = c(-0.25, 12), ylim = c(-20, 40), type = "l", yaxt = 'n'))
+with(environ, points(ACT * 2 + 7 ~ dates, type = "p", pch = 16, col = "orange"))
+with(environ, points(SHADE / 10 - 6 ~ dates, type = "l", col = "dark green"))
+with(environ, points(DEP - 10 ~ dates, type = "l", col = "brown"))
+abline(ecto$T_F_min, 0, lty = 2, col = 'blue')
+abline(T_pref, 0, lty = 2, col = 'orange')
+abline(ecto$T_F_max, 0, lty = 2, col = 'red')
+ytick<-seq(15, 40, by=5)
+axis(side=2, at=ytick, labels = TRUE)
+mtext(text = c('A', 'B', 'I'), side = 2, line = 1, at = c(11, 9, 7))
+ytick<-seq(-6, 4, by=2)
+axis(side=2, at=ytick, labels = FALSE)
+mtext(text = seq(0, 100, 20), side = 2, line = 1, at = seq(-6, 4, 2), las = 2)
+ytick<-seq(-20, -10, by=2)
+axis(side=2, at=ytick, labels = FALSE)
+mtext(text = rev(seq(0, 100, 20)), side = 2, line = 1, at = seq(-20, -10, 2), las = 2)
+abline(h = -10, lty = 2, col = 'grey')
+mtext(text = c('body temperature (°C)', 'activity', 'shade (%)', 'depth (cm)'), side = 2, line = 2.5, at = c(30, 9, 0, -15))
+text(0.1, c(ecto$T_F_max + 1, ecto$T_F_min + 1), c('T_F_max', 'T_F_min'), col = c('red', 'blue'), cex = 0.75)
+```
+
+In Figure 1 you can see the daily cycles, for each month, of the body temperature (black), % shade selected (green, divided by 10 for plotting), activity level in orange (multiplied by 5 for plotting, so 5 = basking, 10 = active) and depth in brown (cm). Also superimposed are the foraging thresholds `T_F_min` (blue dashed line) and `T_F_max` (red dashed line), and the preferred or target temperature `T_pref` (orange dashed line). 
+
+Note how this lizard is active every day, but requires shade for this, and how body temperature jumps up on some evenings when it goes into its burrow (remember when inactive the body temperature may rise to a maximum of half way between `T_F_max` and `CT_max` before the animal moves deeper into the burrow).
+
+```{r, fig.width=7, fig.height=5, fig.show = "hold", message=FALSE, warnings=FALSE, fig.cap="**Annual activity window for the lizard *Eulamprus quoyii* with shade options ranging from 0% to 90%**"}
+# seasonal activity plot (dark blue = night, light blue = basking, orange = foraging)
+forage <- subset(environ, ACT == 2) # get foraging hours
+bask <- subset(environ, ACT == 1) # get basking hours
+night <- subset(environ, Solar == 0) # get night hours
+with(night, plot(TIME ~ DOY, ylab = "Hour of Day", xlab = "Day of Year", pch = 15, cex = 2, 
+                 col = 'dark blue')) # nighttime hours
+with(forage, points(TIME ~ DOY, pch = 15, cex = 2, col = 'orange')) # foraging Tbs
+with(bask, points(TIME ~ DOY, pch = 15, cex = 2, col = 'light blue')) # basking Tbs
+```
+
+In Figure 2 you can see the annual activity window, with dark blue representing the nighttime hours, light blue the basking hours and orange the foraging hours. Activity is possible for this lizard at this tropical location throughout they year.
+
+Explore what changing the thermal thresholds `CT_min`, `T_RB_min`, `T_B_min`, `T_F_min`, `T_F_max` and `CT_max` does to these plots, as well as variation in available shade `maxshades` and burrow depths `mindepth` and `maxdepth`. Here is an example of the effect of reducing maximum shade in all months from 90% to 10%:
+
+```{r, echo=FALSE, fig.width=7, fig.height=7, fig.show = "hold", message=FALSE, warnings=FALSE, fig.cap="**Body temperature, depth, shade and activity of for the lizard *Eulamprus quoyii* with shade options ranging from 0% to 10%**"}
+micro <- micro_global(loc = longlat, maxshade = 10)
+maxshades <- micro$maxshade
+
+ecto <- ectotherm(Ww_g = Ww_g, alpha_max = alpha_max, alpha_min = alpha_min, pct_wet = pct_wet, T_F_max = T_F_max, T_F_min = T_F_min, T_B_min = T_B_min, T_RB_min = T_RB_min, CT_max = CT_max, CT_min = CT_min, T_pref = T_pref, mindepth = mindepth, maxdepth = maxdepth, shade_seek = shade_seek, burrow = burrow, climb = climb, minshades = minshades, nocturn = nocturn, diurn = diurn, crepus = crepus, maxshades = maxshades)
+
+# retrieve output
+environ <- as.data.frame(ecto$environ) # behaviour, Tb and environment
+enbal <- as.data.frame(ecto$enbal) # heat balance outputs
+masbal <- as.data.frame(ecto$masbal) # mass balance outputs
+metout <- as.data.frame(micro$metout) # above ground microclimate
+soil <- as.data.frame(micro$soil) # soil temperature
+environ <- cbind(environ,metout$SOLR) # add solar radiation for activity window plots
+colnames(environ)[ncol(environ)] <- "Solar"
+
+# append dates
+days <- rep(seq(1,12),24)
+days <- days[order(days)]
+dates <- days+metout$TIME/60/24-1 # dates for hourly output
+dates2 <- seq(1,12,1) # dates for daily output
+metout <- cbind(dates,metout)
+environ <- cbind(dates,environ)
+masbal <- cbind(dates,masbal)
+enbal <- cbind(dates,enbal)
+
+with(environ, plot(TC ~ dates, ylab = "", xlab="month of year", col = 'black', xlim = c(-0.25, 12), ylim = c(-20, 40), type = "l", yaxt = 'n'))
+with(environ, points(ACT * 2 + 7 ~ dates, type = "p", pch = 16, col = "orange"))
+with(environ, points(SHADE / 10 - 6 ~ dates, type = "l", col = "dark green"))
+with(environ, points(DEP - 10 ~ dates, type = "l", col = "brown"))
+abline(ecto$T_F_min, 0, lty = 2, col = 'blue')
+abline(ecto$T_F_max, 0, lty = 2, col = 'red')
+ytick<-seq(15, 40, by=5)
+axis(side=2, at=ytick, labels = TRUE)
+mtext(text = c('A', 'B', 'I'), side = 2, line = 1, at = c(11, 9, 7))
+ytick<-seq(-6, 4, by=2)
+axis(side=2, at=ytick, labels = FALSE)
+mtext(text = seq(0, 100, 20), side = 2, line = 1, at = seq(-6, 4, 2), las = 2)
+ytick<-seq(-20, -10, by=2)
+axis(side=2, at=ytick, labels = FALSE)
+mtext(text = rev(seq(0, 100, 20)), side = 2, line = 1, at = seq(-20, -10, 2), las = 2)
+abline(h = -10, lty = 2, col = 'grey')
+mtext(text = c('body temperature (°C)', 'activity', 'shade (%)', 'depth (cm)'), side = 2, line = 2.5, at = c(30, 9, 0, -15))
+text(0.1, c(ecto$T_F_max + 1, ecto$T_F_min + 1), c('T_F_max', 'T_F_min'), col = c('red', 'blue'), cex = 0.75)
+```
+
+```{r, fig.width=7, fig.height=5, fig.show = "hold", message=FALSE, warnings=FALSE, fig.cap="**Annual activity window for the lizard *Eulamprus quoyii* with shade options ranging from 0% to 10%**"}
+forage<-subset(environ,ACT==2)
+bask<-subset(environ,ACT==1)
+night<-subset(environ,Solar==0)
+day<-subset(environ,Solar==0)
+with(night,plot(TIME ~ DOY,ylab="Hour of Day",xlab="Day of Year",pch=15,cex=2,col=
+    'dark blue'))
+# nighttime hours
+with(forage,points(TIME~DOY,pch=15,cex=2,col='orange')) # foraging Tbs
+with(bask,points(TIME~DOY,pch=15,cex=2,col='light blue')) # basking Tbs
+```
+
+## Simulating leaf temperature
+
+There are two ways to simulate leaf temperature in NicheMapR. One is to use Campbell and Norman's humid operative temperature calculation applied to include stomatal conductances. This has been encoded in NicheMapR as the function `leaf_temperature`. An example application of this to calculate leaf temperature at noon on January 15th from the microclimate simulation above is provided below. The weight and shape of the leaf is specified as well as its solar absorptivity and emissivity, stomatal conductances on either side of the leaf and solar absorptivity of the substrate.
+
+```{r, warning=FALSE, message=FALSE}
+# leaf functional traits
+Ww_g <- 1 # wet weight, g
+shape <- 2 # 0=plate, 1=cylinder, 2=ellipsoid
+shape_b <- 0.0025 # ratio of b axis:a axis for ellipsoid 
+shape_c <- 0.1176 # ratio of c axis:a axis for ellipsoid 
+alpha_L <- 0.5 # solar absorptivity of the leaf (-)
+alpha_S <- 0.85 # substrate absorptivity used in microclimate model
+epsilon_L <- 0.97 # emissivity of the leaf (-)
+g_vs_ab <- 0.2 # leaf vapour conductance, abaxial (bottom of leaf), mol/m2/s
+g_vs_ad <- 0.0 # leaf vapour conductance, adaxial (top of leaf), mol/m2/s
+
+# get surface area and width given geometry above
+GEOM.out <- GEOM_ecto(AMASS = Ww_g / 1000, 
+                      GEOMETRY = shape, 
+                      SHP = c(1, shape_b, shape_c), 
+                      PTCOND = 0, 
+                      PMOUTH = 0)
+A <- GEOM.out$AREA
+A_sil <- (GEOM.out$ASILN + GEOM.out$ASILP) / 2
+w <- GEOM.out$AL / 0.7 # leaf width, m
+T_leaf_CN <- leaf_temperature(w = w, # leaf width, m
+                            A = A, # total leaf area, m^2
+                            A_sil = A_sil, # silhouette area, m^2
+                            alpha_L = alpha_L,
+                            alpha_S = alpha_S,
+                            g_vs_ab = g_vs_ab, 
+                            g_vs_ad = g_vs_ad, 
+                            TA = metout$TALOC[13], 
+                            TGRD = soil$D0cm[13], 
+                            TSKY = metout$TSKYC[13], 
+                            VEL = metout$VLOC[13], 
+                            RH = metout$RHLOC[13], 
+                            QSOLR = metout$SOLR[13], 
+                            Z = metout$ZEN[13],
+                            PDIF = 0.15)
+T_leaf_CN
+```
+
+A more general approach is to use the `ectotherm` function, which has the argument 'leaf' which, when set to a value of 1 causes the model to use the stomatal conductance formulation of Campbell and Norman to compute evaporative water loss.
+
+```{r, warning=FALSE, message=FALSE}
+# additional leaf functional traits used by ectotherm model
+postur <- 0 # orientation to sun, 1=perpendicular, 2=parallel, 0=inbetween
+fatosk <- 0.5 # radiation configuration factor to sky (-)
+fatosb <- 0.5 # radiation configuration factor to substrate (-)
+
+# simulate leaf with ectotherm model
+ecto <- ectotherm(leaf = 1, # turn on leaf mode
+                  live = 0, # no behavoiural thermoregulation
+                  pct_cond = 0, # no conduction
+                  Ww_g = Ww_g,
+                  shape = shape,
+                  shape_b = shape_b,
+                  shape_c = shape_c,
+                  alpha_max = alpha_L,
+                  alpha_min = alpha_L,
+                  postur = postur,
+                  fatosk = fatosk,
+                  fatosb = fatosk,
+                  epsilon = epsilon_L,
+                  g_vs_ab = g_vs_ab,
+                  g_vs_ad = g_vs_ad
+                 )
+environ <- as.data.frame(ecto$environ)
+masbal <- as.data.frame(ecto$masbal)
+T_leaf <- environ$TC[13] # get leaf temp, deg C, at 1pm in January
+T_leaf
+evap <- masbal$H2OCut_g[13] # get leaf water loss, g/h
+evap
+``` 
+
+## Discussion
+
+The capacity to compute body temperature, metabolic rates, activity times and some aspects of the water budget under realistic microclimates allows many inferences to be made about the ability of different types of animals to live in different climates and habitats. In some cases such processes may be limiting factors of the distribution. For example, Kearney and Porter (2004) found that activity time was likely to be a limiting factor for a nocturnal lizard in southern Australia. More often, these constraints act to limit the overall energy and water budget in a more subtle manner. 
+
+The preliminary computations made in this tutorial can provide the starting point for an energy and mass budget analysis that could ultimately allow you to predict reproductive success and survival rates, the 'vital rates' that link individuals to populations. 
+
+## References
+
+Andrews, R. M., and H. F. Pough. 1985. Metabolism of squamate reptiles: allometric and ecological relationships. Physiological Zoology 58:214-231.
+
+Kearney, M., and W. P. Porter. 2004. Mapping the fundamental niche: physiology, climate, and the distribution of a nocturnal lizard. Ecology 85:3119-3131.
+
+Kearney, M. R., & Porter, W. P. (2017). NicheMapR - an R package for biophysical modelling: the microclimate model. Ecography, 40(5), 664–674. doi:10.1111/ecog.02360
+
+Kearney, M. R., & Porter, W. P. (2019). NicheMapR - an R package for biophysical modelling: the ectotherm and Dynamic Energy Budget models. Ecography. doi:10.1111/ecog.04680
+
